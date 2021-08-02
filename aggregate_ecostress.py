@@ -30,6 +30,16 @@ from osgeo import gdal, gdal_array
 from matplotlib.patches import Polygon
 import matplotlib.path as mpltPath
 import numpy
+import ephem
+
+def daytime(lat, long, time):
+   o = ephem.Observer()
+   o.long = long
+   o.lat = lat
+   o.date = time
+   s = ephem.Sun()
+   s.compute(o)
+   return s.alt > 0
 
 def accumVariableByDistrict(polylist, variable, lat, lon, districtVariable,
                             minlat, minlon, maxlat, maxlon, valid_min, valid_max):
@@ -111,7 +121,7 @@ def find_maxmin_latlon(lat,lon,minlat,minlon,maxlat,maxlon):
         minlon = lon
     return minlat,minlon,maxlat,maxlon
 
-def process_file(filename, districts, dataElement, statType, var_name):
+def process_file(filename, districts, dataElementDay, dataElementNight, statType, centerLat, centerLon):
     print('filename ' + filename)
 #    with gzip.open(filename) as gz:
 #        with NetCDFFile('dummy', mode='r', memory=gz.read()) as nc:
@@ -152,7 +162,9 @@ def process_file(filename, districts, dataElement, statType, var_name):
     lon = numpy.zeros(shape=(rows,cols))
     lat = numpy.zeros(shape=(rows,cols))
 
-    variable = ds.ReadAsArray(0, 0, cols, rows).astype(numpy.float)
+    #variable = ds.ReadAsArray(0, 0, cols, rows).astype(numpy.float)
+    # oddly, "variable" is accessed as [row][col], i.e. [Y][X], so set up lat, lon using same dimensions
+    variable = ds.ReadAsArray(0, 0, cols, rows).astype(float)
     for row in range(0, rows):
         for col in range(0, cols):
             lon[row][col], lat[row][col] = pixel2coord(col, row)
@@ -186,6 +198,8 @@ def process_file(filename, districts, dataElement, statType, var_name):
     print("lat.shape[0]", lat.shape[0])
     print("lat.shape[1]", lat.shape[1])
 
+    #daytime("53", "-2", '2018/02/08 16:30:00')
+
     # filename format:  ECOSTRESS_L2_LSTE_09009_009_20200206T214458_0601_01_LST_GEO.tif
     # parse out date/time from filename
     # strip out yyyyddd from opendap url
@@ -198,6 +212,18 @@ def process_file(filename, districts, dataElement, statType, var_name):
     print("day ", day)
     dateStr = year + month +day
     print("date ", dateStr)
+    hour=tempstr[9:11]
+    min=tempstr[11:13]
+    sec=tempstr[13:15]
+    timestr= hour+":"+min+":"+sec
+    print("time ", timestr)
+
+    timestamp = year+"/"+month+"/"+day+" "+timestr
+    print("timestamp",timestamp)
+
+    #dayFlag = daytime(centerLat, centerLon, '2018/02/08 16:30:00')
+    dayFlag = daytime(centerLat, centerLon, timestamp)
+    print("daytime flag ",dayFlag)
 
     #    im = PIL.Image.new(mode="RGB", size=(lon.shape[0], lat.shape[0]), color=(255, 255, 255))
 
@@ -262,16 +288,27 @@ def process_file(filename, districts, dataElement, statType, var_name):
     outputJson = []
     for key in districtVariableStats.keys():
         value = districtVariableStats[key][statType]
-        jsonRecord = {'dataElement':dataElement,'period':dateStr,'orgUnit':key,'value':value}
+        if dayFlag:
+            #jsonRecord = {'dataElement':dataElementDay,'period':dateStr,'orgUnit':key,'value':value}
+            jsonRecord = {'dataElement':dataElementDay,'period':dateStr,'orgUnit':key,'value':value-273.15}
+        else:
+            #jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value}
+            jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value-273.15}
         outputJson.append(jsonRecord)
 
-    return outputJson
+    return outputJson, dayFlag
 
 def main():
 
-    ECO_DATA_DIR = '/media/sf_berendes/ecostress/data'
-    OUT_DIR = '/media/sf_berendes/ecostress/upload'
-    CONFIG_FILE = '/media/sf_berendes/ecostress/config/ecostress_geo_config.json'
+    ECO_DATA_DIR = '/media/sf_tberendes/ecostress/data'
+    OUT_DIR = '/media/sf_tberendes/ecostress/upload'
+    CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config.json'
+#    CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config_day.json'
+#    CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config_night.json'
+    # center lat/lon for sierra leon used in pyephem to find day/night,
+    # NOTE these must be strings NOT floats
+    centerLat = '8.5'
+    centerLon = '-11.75'
 
     input_json = {"message": "error"}
     try:
@@ -282,27 +319,81 @@ def main():
         print("Could not read file:" + CONFIG_FILE)
         sys.exit(1)
 
-    outputJson = {'dataValues' : []}
+    #outputJson = {'dataValues' : []}
+    outputJsonDay = {'dataValues' : []}
+    outputJsonNight = {'dataValues' : []}
 
+    fileJson={}
     for root, dirs, files in os.walk(ECO_DATA_DIR, topdown=False):
         for file in files:
             print('file ' + file)
             # only process zipped nc VN files
             if file.endswith('.tif') or file.endswith('.tif.gz'):
-                fileJson = process_file(os.path.join(root, file), input_json['boundaries'], input_json['data_element_id'],
-                                        input_json['stat_type'],input_json['var_name'])
-            # write out results for individual file, can be used to create final file if interrupted
-            with open(OUT_DIR + "/"+file+".json", 'w') as json_file:
-                json.dump(fileJson, json_file)
+                #if json file for this image already exists, read it and append to upload files
+                if os.path.isfile(OUT_DIR + "/"+file+".json"):
+                    with open(OUT_DIR + "/"+file+".json") as f:
+                        fileJson = json.load(f)
+                        records = fileJson['records']
+                        dayFlag = fileJson['daytime']
+
+                    # this block is a fix for bad day/night flag, remove when fixed
+                    # tempstr = os.path.basename(file).split("_")[5]
+                    # year = tempstr[0:4]
+                    # print("year ", year)
+                    # month = tempstr[4:6]
+                    # print("month ", month)
+                    # day = tempstr[6:8]
+                    # print("day ", day)
+                    # dateStr = year + month + day
+                    # print("date ", dateStr)
+                    # hour = tempstr[9:11]
+                    # min = tempstr[11:13]
+                    # sec = tempstr[13:15]
+                    # timestr = hour + ":" + min + ":" + sec
+                    # print("time ", timestr)
+                    #
+                    # timestamp = year + "/" + month + "/" + day + " " + timestr
+                    # print("timestamp", timestamp)
+                    #
+                    # # dayFlag = daytime(centerLat, centerLon, '2018/02/08 16:30:00')
+                    # dayFlag = daytime(centerLat, centerLon, timestamp)
+                    # print("daytime flag ", dayFlag)
+                    # fileJson['daytime'] = dayFlag
+                    # with open(OUT_DIR + "/"+file+".json", 'w') as json_file:
+                    #     json.dump(fileJson, json_file)
+                else:
+                    records, dayFlag = process_file(os.path.join(root, file), input_json['boundaries'], input_json['data_element_id_day'],
+                                        input_json['data_element_id_night'],input_json['stat_type'], centerLat, centerLon)
+                    fileJson['daytime'] = dayFlag
+                    fileJson['records'] = records
+                    # write out results for individual file, can be used to create final file if interrupted
+                    with open(OUT_DIR + "/"+file+".json", 'w') as json_file:
+                        json.dump(fileJson, json_file)
             # construct output filename based on date and variable
-            for record in fileJson:
-                outputJson['dataValues'].append(record)
+            for record in records:
+                # ignore data element ids in origninal files, use config version
+                if fileJson['daytime']:
+                    record['dataElement'] = input_json['data_element_id_day']
+                else:
+                    record['dataElement'] = input_json['data_element_id_night']
+                if record['value'] >0.0:
+                    # if value > 100, assume in Kelvin, convert to Celsius
+                    if record['value'] >100.0:
+                        record['value'] = record['value'] - 273.15
+                    # outputJson['dataValues'].append(record)
+                    if dayFlag:
+                        outputJsonDay['dataValues'].append(record)
+                    else:
+                        outputJsonNight['dataValues'].append(record)
 
     #    with open(OUT_DIR+ "/" + file.split('.')[0]+'.json', 'w') as result_file:
     # write out accumulated results for all files
-    with open(OUT_DIR + "/ecostress_temp_upload.json", 'w') as result_file:
-        json.dump(outputJson, result_file)
-    result_file.close()
+    # with open(OUT_DIR + "/ecostress_lst_upload.json", 'w') as result_file:
+    #     json.dump(outputJson, result_file)
+    with open(OUT_DIR + "/ecostress_lst_day_upload.json", 'w') as result_file:
+        json.dump(outputJsonDay, result_file)
+    with open(OUT_DIR + "/ecostress_lst_night_upload.json", 'w') as result_file:
+        json.dump(outputJsonNight, result_file)
 
 if __name__ == '__main__':
    main()
