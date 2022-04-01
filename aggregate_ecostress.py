@@ -139,8 +139,10 @@ def process_file(filename, districts, dataElementDay, dataElementNight, statType
         ds = gdal.Open(filename)
     #raster = ds.GetRasterBand(1)
 
-    valid_min=1
-    valid_max=350
+    valid_min=227
+    valid_max=330
+    #valid_min=1
+    #valid_max=100000
     # valid_min=raster.GetMinimum()
     # valid_max=raster.GetMaximum()
     print("valid_min ", valid_min)
@@ -164,7 +166,8 @@ def process_file(filename, districts, dataElementDay, dataElementNight, statType
 
     #variable = ds.ReadAsArray(0, 0, cols, rows).astype(numpy.float)
     # oddly, "variable" is accessed as [row][col], i.e. [Y][X], so set up lat, lon using same dimensions
-    variable = ds.ReadAsArray(0, 0, cols, rows).astype(float)
+#    variable = ds.ReadAsArray(0, 0, cols, rows).astype(float)
+    variable = ds.ReadAsArray(0, 0, cols, rows).astype(numpy.float64)
     for row in range(0, rows):
         for col in range(0, cols):
             lon[row][col], lat[row][col] = pixel2coord(col, row)
@@ -203,7 +206,10 @@ def process_file(filename, districts, dataElementDay, dataElementNight, statType
     # filename format:  ECOSTRESS_L2_LSTE_09009_009_20200206T214458_0601_01_LST_GEO.tif
     # parse out date/time from filename
     # strip out yyyyddd from opendap url
-    tempstr = os.path.basename(filename).split("_")[5]
+    if "Clipped_".lower() in filename.lower():
+        tempstr = os.path.basename(filename).split("_")[6]
+    else:
+        tempstr = os.path.basename(filename).split("_")[5]
     year = tempstr[0:4]
     print("year ", year)
     month = tempstr[4:6]
@@ -290,18 +296,25 @@ def process_file(filename, districts, dataElementDay, dataElementNight, statType
         value = districtVariableStats[key][statType]
         if dayFlag:
             #jsonRecord = {'dataElement':dataElementDay,'period':dateStr,'orgUnit':key,'value':value}
-            jsonRecord = {'dataElement':dataElementDay,'period':dateStr,'orgUnit':key,'value':value-273.15}
+            if value > 0:
+                jsonRecord = {'dataElement':dataElementDay,'period':dateStr,'orgUnit':key,'value':value-273.15}
+                outputJson.append(jsonRecord)
         else:
-            #jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value}
-            jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value-273.15}
-        outputJson.append(jsonRecord)
+            #jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value}'
+            if value > 0:
+                jsonRecord = {'dataElement': dataElementNight, 'period': dateStr, 'orgUnit': key, 'value': value-273.15}
+                outputJson.append(jsonRecord)
 
     return outputJson, dayFlag
 
 def main():
 
-    ECO_DATA_DIR = '/media/sf_tberendes/ecostress/data'
-    OUT_DIR = '/media/sf_tberendes/ecostress/upload'
+    ECO_DATA_DIR = '/media/sf_tberendes/ecostress/data_all'
+    OUT_DIR = '/media/sf_tberendes/ecostress/upload_all'
+#    ECO_DATA_DIR = '/media/sf_tberendes/ecostress/data_3_7_22'
+#    OUT_DIR = '/media/sf_tberendes/ecostress/upload_3_7_22'
+#    ECO_DATA_DIR = '/media/sf_tberendes/ecostress/data'
+#    OUT_DIR = '/media/sf_tberendes/ecostress/upload'
     CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config.json'
 #    CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config_day.json'
 #    CONFIG_FILE = '/media/sf_tberendes/ecostress/config/ecostress_geo_config_night.json'
@@ -327,7 +340,10 @@ def main():
     for root, dirs, files in os.walk(ECO_DATA_DIR, topdown=False):
         for file in files:
             print('file ' + file)
-            # only process zipped nc VN files
+            # only process the original staged files until new ones are fixed:
+            #*************************^&%&^%^$^%$#%#%$#%$#%$#%$#%$#%$ remove this!!!!!!!!!!!!!!!!!
+#            if file.startswith('ECO'):
+#                continue
             if file.endswith('.tif') or file.endswith('.tif.gz'):
                 #if json file for this image already exists, read it and append to upload files
                 if os.path.isfile(OUT_DIR + "/"+file+".json"):
@@ -378,8 +394,8 @@ def main():
                     record['dataElement'] = input_json['data_element_id_night']
                 if record['value'] >0.0:
                     # if value > 100, assume in Kelvin, convert to Celsius
-                    if record['value'] >100.0:
-                        record['value'] = record['value'] - 273.15
+#                    if record['value'] >100.0:
+#                        record['value'] = record['value'] - 273.15
                     # outputJson['dataValues'].append(record)
                     if dayFlag:
                         outputJsonDay['dataValues'].append(record)
